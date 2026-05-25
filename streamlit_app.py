@@ -9,7 +9,7 @@ st.set_page_config(
 st.title("📈 NS Portfolio Dashboard")
 
 st.markdown("""
-Welcome to the portfolio dashboard.
+Welcome to the mobile-first portfolio dashboard.
 
-Use the sidebar to navigate between sections.
+Use the sidebar to navigate between pages.
 """)

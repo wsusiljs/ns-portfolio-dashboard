@@ -5,36 +5,12 @@ import plotly.express as px
 from utils.data_loader import load_data
 from utils.filters import filter_data
 from utils.price_fetcher import get_realtime_prices
-
-# =========================================================
-# PAGE CONFIG
-# =========================================================
-
-st.set_page_config(
-    page_title="Portfolio Summary",
-    layout="wide"
-)
+from utils.fx import get_fx_rate
+from utils.sidebar import render_sidebar
 
 st.title("📊 Portfolio Summary")
 
-# =========================================================
-# SIDEBAR
-# =========================================================
-
-owner_account = st.sidebar.selectbox(
-    "Select Account",
-    [
-        "ALL",
-        "Nilmini-TFSA",
-        "Nilmini-INV",
-        "Susil-TFSA",
-        "Susil-INV"
-    ]
-)
-
-# =========================================================
-# LOAD DATA
-# =========================================================
+owner_account = render_sidebar()
 
 df = load_data()
 
@@ -44,56 +20,32 @@ symbols = df["Yahoo Finance Symbol"].unique().tolist()
 
 price_map = get_realtime_prices(symbols)
 
-# =========================================================
-# REALTIME VALUES
-# =========================================================
+df["Price"] = df["Yahoo Finance Symbol"].map(price_map)
 
-df["Price"] = (
-    df["Yahoo Finance Symbol"]
-    .map(price_map)
-    .fillna(0)
+df["Value"] = df["Quantity"] * df["Price"]
+
+cad_total = df[df["Currency"] == "CAD"]["Value"].sum()
+
+usd_total = df[df["Currency"] == "USD"]["Value"].sum()
+
+fx = get_fx_rate()
+
+combined = cad_total + usd_total * fx
+
+st.metric(
+    "Combined Portfolio (CAD)",
+    f"{combined:,.0f}"
 )
 
-df["Value"] = (
-    df["Quantity"]
-    * df["Price"]
+st.metric(
+    "Canadian Portfolio",
+    f"{cad_total:,.0f} CAD"
 )
 
-# =========================================================
-# TOTALS
-# =========================================================
-
-cad_total = round(
-    df[df["Currency"] == "CAD"]["Value"].sum()
+st.metric(
+    "US Portfolio",
+    f"{usd_total:,.0f} USD"
 )
-
-usd_total = round(
-    df[df["Currency"] == "USD"]["Value"].sum()
-)
-
-# =========================================================
-# KPI CARDS
-# =========================================================
-
-c1, c2 = st.columns(2)
-
-with c1:
-
-    st.metric(
-        "Canadian Portfolio",
-        f"{cad_total:,.0f} CAD"
-    )
-
-with c2:
-
-    st.metric(
-        "US Portfolio",
-        f"{usd_total:,.0f} USD"
-    )
-
-# =========================================================
-# PIE CHART
-# =========================================================
 
 pie_fig = px.pie(
     names=["Canada", "US"],
@@ -101,124 +53,66 @@ pie_fig = px.pie(
     hole=0.4
 )
 
-pie_fig.update_layout(
-    height=400
+st.plotly_chart(
+    pie_fig,
+    use_container_width=True
 )
 
-# =========================================================
-# BREAKDOWN FUNCTION
-# =========================================================
+accounts = [
+    "Nilmini-TFSA",
+    "Nilmini-INV",
+    "Susil-TFSA",
+    "Susil-INV"
+]
 
-def prepare_breakdown(currency):
+rows = []
 
-    accounts = [
-        "Nilmini-TFSA",
-        "Nilmini-INV",
-        "Susil-TFSA",
-        "Susil-INV"
-    ]
+for acc in accounts:
 
-    rows = []
+    owner, acct = acc.split("-")
 
-    for acc in accounts:
+    cad_val = df[
+        (df["Currency"] == "CAD")
+        & (df["Owner"] == owner)
+        & (df["Account"].str.contains(acct))
+    ]["Value"].sum()
 
-        owner, acct = acc.split("-")
+    usd_val = df[
+        (df["Currency"] == "USD")
+        & (df["Owner"] == owner)
+        & (df["Account"].str.contains(acct))
+    ]["Value"].sum()
 
-        val = df[
-            (df["Currency"] == currency)
-            & (df["Owner"] == owner)
-            & (df["Account"].str.contains(acct))
-        ]["Value"].sum()
+    rows.append({
+        "Account": acc,
+        "CAD": cad_val,
+        "USD": usd_val
+    })
 
-        rows.append({
-            "Account": acc,
-            "Value": val
-        })
+breakdown_df = pd.DataFrame(rows)
 
-    return (
-        pd.DataFrame(rows)
-        .sort_values("Value", ascending=False)
-    )
-
-# =========================================================
-# CANADA BREAKDOWN
-# =========================================================
-
-canada_df = prepare_breakdown("CAD")
-
-canada_fig = px.bar(
-    canada_df,
+cad_fig = px.bar(
+    breakdown_df,
     x="Account",
-    y="Value",
-    text="Value",
-    title="Canada Breakdown"
+    y="CAD",
+    text_auto=".0f",
+    title="Canadian Breakdown"
 )
 
-canada_fig.update_traces(
-    texttemplate="%{text:,.0f}",
-    textposition="outside"
+st.plotly_chart(
+    cad_fig,
+    use_container_width=True
 )
 
-canada_fig.update_layout(
-    height=400
-)
-
-# =========================================================
-# US BREAKDOWN
-# =========================================================
-
-us_df = prepare_breakdown("USD")
-
-us_fig = px.bar(
-    us_df,
+usd_fig = px.bar(
+    breakdown_df,
     x="Account",
-    y="Value",
-    text="Value",
+    y="USD",
+    text_auto=".0f",
     title="US Breakdown"
 )
 
-us_fig.update_traces(
-    texttemplate="%{text:,.0f}",
-    textposition="outside"
-)
-
-us_fig.update_layout(
-    height=400
-)
-
-# =========================================================
-# DISPLAY CHARTS
-# =========================================================
-
-col1, col2, col3 = st.columns([1,1,1])
-
-with col1:
-
-    st.plotly_chart(
-        canada_fig,
-        use_container_width=True
-    )
-
-with col2:
-
-    st.plotly_chart(
-        pie_fig,
-        use_container_width=True
-    )
-
-with col3:
-
-    st.plotly_chart(
-        us_fig,
-        use_container_width=True
-    )
-
-# =========================================================
-# MOBILE OPTIMIZATION
-# =========================================================
-
-st.divider()
-
-st.caption(
-    "Dashboard optimized for desktop and mobile viewing."
+st.plotly_chart(
+    usd_fig,
+    use_container_width=True
 )
