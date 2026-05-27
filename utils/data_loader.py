@@ -6,9 +6,15 @@ def load_data():
 
     df = pd.read_csv("stock-data.csv")
 
+    df["Market"] = (
+        df["Market"]
+        .astype(str)
+        .str.strip()
+        .str.upper()
+    )
+
     df["Currency"] = df["Market"].map({
-        "Canada": "CAD",
+        "CANADA": "CAD",
         "US": "USD"
     })
-
     return df

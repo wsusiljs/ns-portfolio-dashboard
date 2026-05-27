@@ -37,6 +37,7 @@ owner_account = render_sidebar()
 range_choice = st.radio(
     "Select Range",
     ["90d", "1y", "3y"],
+    index=2,
     horizontal=True
 )
 
@@ -55,6 +56,7 @@ selected_period = period_map[range_choice]
 df = load_data()
 
 df = filter_data(df, owner_account)
+# st.write(df[["Yahoo Finance Symbol", "Market", "Currency"]])
 
 # =========================================================
 # REQUIRED COLUMNS
@@ -197,13 +199,15 @@ for _, row in df.iterrows():
             ticker_series,
             fill_value=0
         )
+        cad_series = cad_series.ffill()
 
-    else:
+    elif currency == "USD":
 
         usd_series = usd_series.add(
             ticker_series,
             fill_value=0
         )
+        usd_series = usd_series.ffill()
 
 # =========================================================
 # PERFORMANCE DATAFRAME
@@ -268,6 +272,8 @@ def calculate_growth(series):
 
     clean = series.dropna()
 
+    clean = clean[clean != 0]
+
     if len(clean) == 0:
 
         return pd.Series(
@@ -276,13 +282,6 @@ def calculate_growth(series):
         )
 
     base = clean.iloc[0]
-
-    if base == 0:
-
-        return pd.Series(
-            0,
-            index=series.index
-        )
 
     return (
         (
@@ -385,9 +384,13 @@ else:
     # NORMALIZE FUNCTION
     # =====================================================
 
+
     def normalize(series):
 
         clean = series.dropna()
+
+    # remove zero values too
+        clean = clean[clean != 0]
 
         if len(clean) == 0:
 
@@ -396,19 +399,15 @@ else:
                 index=series.index
             )
 
+    # first NON-ZERO value
         base = clean.iloc[0]
 
-        if base == 0:
-
-            return pd.Series(
-                0,
-                index=series.index
-            )
-
-        return (
+        normalized = (
             series / base
         ) * 100
 
+        return normalized
+    
     # =====================================================
     # NORMALIZED SERIES
     # =====================================================
