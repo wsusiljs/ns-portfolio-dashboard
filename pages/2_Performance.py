@@ -36,12 +36,11 @@ owner_account = render_sidebar()
 
 range_choice = st.radio(
     "Select Range",
-    ["30d", "90d", "1y", "3y"],
+    ["90d", "1y", "3y"],
     horizontal=True
 )
 
 period_map = {
-    "30d": "1mo",
     "90d": "3mo",
     "1y": "1y",
     "3y": "3y"
@@ -57,73 +56,154 @@ df = load_data()
 
 df = filter_data(df, owner_account)
 
-symbols = df["Yahoo Finance Symbol"].unique().tolist()
+# =========================================================
+# REQUIRED COLUMNS
+# =========================================================
+
+required_cols = [
+    "Yahoo Finance Symbol",
+    "Quantity",
+    "Currency"
+]
+
+missing_cols = [
+    col for col in required_cols
+    if col not in df.columns
+]
+
+if len(missing_cols) > 0:
+
+    st.error(
+        f"Missing columns: {missing_cols}"
+    )
+
+    st.stop()
 
 # =========================================================
-# DOWNLOAD HISTORICAL DATA
+# CLEAN DATA
+# =========================================================
+
+df["Quantity"] = pd.to_numeric(
+    df["Quantity"],
+    errors="coerce"
+).fillna(0)
+
+# =========================================================
+# SYMBOLS
+# =========================================================
+
+symbols = df[
+    "Yahoo Finance Symbol"
+].dropna().unique().tolist()
+
+if len(symbols) == 0:
+
+    st.warning(
+        "No symbols found."
+    )
+
+    st.stop()
+
+# =========================================================
+# DOWNLOAD PRICE DATA
 # =========================================================
 
 @st.cache_data(ttl=1800)
 def download_prices(symbols, period):
 
-    prices = yf.download(
+    data = yf.download(
         symbols,
         period=period,
         interval="1d",
-        progress=False
-    )["Close"]
+        progress=False,
+        auto_adjust=True
+    )
+
+    if data.empty:
+
+        return pd.DataFrame()
+
+    # Handle single symbol case
+
+    if len(symbols) == 1:
+
+        prices = data["Close"].to_frame()
+
+        prices.columns = symbols
+
+    else:
+
+        prices = data["Close"]
 
     prices = prices.ffill()
 
-    if isinstance(prices, pd.Series):
-        prices = prices.to_frame()
-
     return prices
 
-with st.spinner("Loading portfolio performance..."):
+with st.spinner("Loading performance data..."):
 
     prices = download_prices(
         symbols,
         selected_period
     )
 
+if prices.empty:
+
+    st.error(
+        "Unable to download price data."
+    )
+
+    st.stop()
+
 # =========================================================
 # BUILD PORTFOLIO SERIES
 # =========================================================
 
 cad_series = pd.Series(
-    0,
+    0.0,
     index=prices.index
 )
 
 usd_series = pd.Series(
-    0,
+    0.0,
     index=prices.index
 )
+
+# =========================================================
+# CALCULATE DAILY PORTFOLIO VALUES
+# =========================================================
 
 for _, row in df.iterrows():
 
     ticker = row["Yahoo Finance Symbol"]
+
     qty = row["Quantity"]
+
     currency = row["Currency"]
 
-    if ticker in prices:
+    if ticker not in prices.columns:
 
-        series = prices[ticker] * qty
+        continue
 
-        if currency == "CAD":
+    ticker_series = (
+        prices[ticker]
+        * qty
+    )
 
-            cad_series = cad_series.add(
-                series,
-                fill_value=0
-            )
+    ticker_series = ticker_series.fillna(0)
 
-        else:
+    if currency == "CAD":
 
-            usd_series = usd_series.add(
-                series,
-                fill_value=0
-            )
+        cad_series = cad_series.add(
+            ticker_series,
+            fill_value=0
+        )
+
+    else:
+
+        usd_series = usd_series.add(
+            ticker_series,
+            fill_value=0
+        )
 
 # =========================================================
 # PERFORMANCE DATAFRAME
@@ -156,7 +236,7 @@ main_fig.update_layout(
 
 main_fig = style_fig(
     main_fig,
-    height=450
+    height=500
 )
 
 st.plotly_chart(
@@ -165,43 +245,62 @@ st.plotly_chart(
 )
 
 # =========================================================
-# 30-DAY MOVING AVERAGE GROWTH
+# MOVING AVERAGE GROWTH
 # =========================================================
 
 st.divider()
 
-st.subheader("30-Day Moving Average Growth (%)")
+st.subheader("30-Day Moving Average Growth")
+
+# =========================================================
+# MOVING AVERAGES
+# =========================================================
 
 cad_ma30 = cad_series.rolling(30).mean()
 
 usd_ma30 = usd_series.rolling(30).mean()
 
 # =========================================================
-# SAFE GROWTH CALCULATION
+# SAFE GROWTH FUNCTION
 # =========================================================
 
-def calculate_growth(ma_series):
+def calculate_growth(series):
 
-    clean = ma_series.dropna()
+    clean = series.dropna()
 
     if len(clean) == 0:
 
         return pd.Series(
             0,
-            index=ma_series.index
+            index=series.index
         )
 
     base = clean.iloc[0]
 
+    if base == 0:
+
+        return pd.Series(
+            0,
+            index=series.index
+        )
+
     return (
         (
-            ma_series / base
+            series / base
         ) - 1
     ) * 100
 
-cad_growth = calculate_growth(cad_ma30)
+cad_growth = calculate_growth(
+    cad_ma30
+)
 
-usd_growth = calculate_growth(usd_ma30)
+usd_growth = calculate_growth(
+    usd_ma30
+)
+
+# =========================================================
+# GROWTH DATAFRAME
+# =========================================================
 
 growth_df = pd.DataFrame({
     "CAD MA30 Growth %": cad_growth,
@@ -224,7 +323,7 @@ growth_fig.update_layout(
 
 growth_fig = style_fig(
     growth_fig,
-    height=450
+    height=500
 )
 
 st.plotly_chart(
@@ -233,126 +332,186 @@ st.plotly_chart(
 )
 
 # =========================================================
-# RELATIVE STRENGTH COMPARISON
+# BENCHMARKS
 # =========================================================
 
 st.divider()
 
 st.subheader("Relative Strength Comparison")
 
-# ---------------------------------------------------------
+# =========================================================
 # DOWNLOAD BENCHMARKS
-# ---------------------------------------------------------
+# =========================================================
 
-benchmarks = yf.download(
-    [
+@st.cache_data(ttl=1800)
+def download_benchmarks(period):
+
+    benchmark_symbols = [
         "^GSPTSE",   # TSX
         "^GSPC"      # S&P500
-    ],
-    period=selected_period,
-    interval="1d",
-    progress=False
-)["Close"]
-
-benchmarks = benchmarks.ffill()
-
-# =========================================================
-# NORMALIZE FUNCTION
-# =========================================================
-
-def normalize(series):
-
-    return (
-        series / series.dropna().iloc[0]
-    ) * 100
-
-# =========================================================
-# NORMALIZED SERIES
-# =========================================================
-
-cad_relative = normalize(cad_series)
-
-usd_relative = normalize(usd_series)
-
-tsx_relative = normalize(
-    benchmarks["^GSPTSE"]
-)
-
-sp500_relative = normalize(
-    benchmarks["^GSPC"]
-)
-
-# =========================================================
-# CANADIAN RELATIVE STRENGTH
-# =========================================================
-
-st.markdown("### 🇨🇦 Canadian Portfolio vs Benchmarks")
-
-cad_compare_df = pd.DataFrame({
-    "Canadian Portfolio": cad_relative,
-    "TSX": tsx_relative,
-    "S&P500": sp500_relative
-})
-
-cad_compare_fig = px.line(
-    cad_compare_df,
-    y=[
-        "Canadian Portfolio",
-        "TSX",
-        "S&P500"
     ]
+
+    data = yf.download(
+        benchmark_symbols,
+        period=period,
+        interval="1d",
+        progress=False,
+        auto_adjust=True
+    )
+
+    if data.empty:
+
+        return pd.DataFrame()
+
+    benchmarks = data["Close"]
+
+    benchmarks = benchmarks.ffill()
+
+    return benchmarks
+
+benchmarks = download_benchmarks(
+    selected_period
 )
 
-cad_compare_fig.update_layout(
-    yaxis_title="Indexed Growth (100 Base)",
-    xaxis_title="Date",
-    legend_title=""
-)
+if benchmarks.empty:
 
-cad_compare_fig = style_fig(
-    cad_compare_fig,
-    height=500
-)
+    st.warning(
+        "Unable to load benchmark data."
+    )
 
-st.plotly_chart(
-    cad_compare_fig,
-    use_container_width=True
-)
+else:
 
-# =========================================================
-# US RELATIVE STRENGTH
-# =========================================================
+    # =====================================================
+    # NORMALIZE FUNCTION
+    # =====================================================
 
-st.markdown("### 🇺🇸 US Portfolio vs S&P500")
+    def normalize(series):
 
-usd_compare_df = pd.DataFrame({
-    "US Portfolio": usd_relative,
-    "S&P500": sp500_relative
-})
+        clean = series.dropna()
 
-usd_compare_fig = px.line(
-    usd_compare_df,
-    y=[
-        "US Portfolio",
-        "S&P500"
-    ]
-)
+        if len(clean) == 0:
 
-usd_compare_fig.update_layout(
-    yaxis_title="Indexed Growth (100 Base)",
-    xaxis_title="Date",
-    legend_title=""
-)
+            return pd.Series(
+                0,
+                index=series.index
+            )
 
-usd_compare_fig = style_fig(
-    usd_compare_fig,
-    height=500
-)
+        base = clean.iloc[0]
 
-st.plotly_chart(
-    usd_compare_fig,
-    use_container_width=True
-)
+        if base == 0:
+
+            return pd.Series(
+                0,
+                index=series.index
+            )
+
+        return (
+            series / base
+        ) * 100
+
+    # =====================================================
+    # NORMALIZED SERIES
+    # =====================================================
+
+    cad_relative = normalize(
+        cad_series
+    )
+
+    usd_relative = normalize(
+        usd_series
+    )
+
+    tsx_relative = normalize(
+        benchmarks["^GSPTSE"]
+    )
+
+    sp500_relative = normalize(
+        benchmarks["^GSPC"]
+    )
+
+    # =====================================================
+    # CANADIAN COMPARISON
+    # =====================================================
+
+    st.markdown(
+        "### 🇨🇦 Canadian Portfolio vs TSX & S&P500"
+    )
+
+    cad_compare_df = pd.DataFrame({
+        "Canadian Portfolio": cad_relative,
+        "TSX": tsx_relative,
+        "S&P500": sp500_relative
+    })
+
+    cad_compare_df = cad_compare_df.dropna(
+        how="all"
+    )
+
+    cad_compare_fig = px.line(
+        cad_compare_df,
+        y=[
+            "Canadian Portfolio",
+            "TSX",
+            "S&P500"
+        ]
+    )
+
+    cad_compare_fig.update_layout(
+        yaxis_title="Indexed Growth (100 Base)",
+        xaxis_title="Date",
+        legend_title=""
+    )
+
+    cad_compare_fig = style_fig(
+        cad_compare_fig,
+        height=550
+    )
+
+    st.plotly_chart(
+        cad_compare_fig,
+        use_container_width=True
+    )
+
+    # =====================================================
+    # US COMPARISON
+    # =====================================================
+
+    st.markdown(
+        "### 🇺🇸 US Portfolio vs S&P500"
+    )
+
+    usd_compare_df = pd.DataFrame({
+        "US Portfolio": usd_relative,
+        "S&P500": sp500_relative
+    })
+
+    usd_compare_df = usd_compare_df.dropna(
+        how="all"
+    )
+
+    usd_compare_fig = px.line(
+        usd_compare_df,
+        y=[
+            "US Portfolio",
+            "S&P500"
+        ]
+    )
+
+    usd_compare_fig.update_layout(
+        yaxis_title="Indexed Growth (100 Base)",
+        xaxis_title="Date",
+        legend_title=""
+    )
+
+    usd_compare_fig = style_fig(
+        usd_compare_fig,
+        height=550
+    )
+
+    st.plotly_chart(
+        usd_compare_fig,
+        use_container_width=True
+    )
 
 # =========================================================
 # KPI SUMMARY
@@ -367,32 +526,48 @@ def latest_value(series):
     clean = series.dropna()
 
     if len(clean) == 0:
+
         return 0
 
-    return round(clean.iloc[-1], 1)
+    return round(
+        clean.iloc[-1],
+        1
+    )
 
-latest_cad_growth = latest_value(cad_growth)
-
-latest_usd_growth = latest_value(usd_growth)
-
-st.metric(
-    "🇨🇦 CAD MA30 Growth",
-    f"{latest_cad_growth}%"
+latest_cad_growth = latest_value(
+    cad_growth
 )
 
-st.metric(
-    "🇺🇸 USD MA30 Growth",
-    f"{latest_usd_growth}%"
+latest_usd_growth = latest_value(
+    usd_growth
 )
 
+col1, col2 = st.columns(2)
+
+with col1:
+
+    st.metric(
+        "🇨🇦 CAD MA30 Growth",
+        f"{latest_cad_growth}%"
+    )
+
+with col2:
+
+    st.metric(
+        "🇺🇸 USD MA30 Growth",
+        f"{latest_usd_growth}%"
+    )
+
 # =========================================================
-# OPTIONAL DETAILS
+# OPTIONAL RAW DATA
 # =========================================================
 
-with st.expander("Show Raw Performance Data"):
+with st.expander(
+    "Show Raw Performance Data"
+):
 
     st.dataframe(
         perf_df.round(2),
         use_container_width=True,
-        height=400
+        height=500
     )
